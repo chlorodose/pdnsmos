@@ -1,0 +1,16 @@
+[package]
+name = "pdnsmos"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+anyhow = "1.0.102"
+hashbrown = "0.16.1"
+ip_network = "0.4.1"
+ip_network_table = "0.2.0"
+libc = "0.2.183"
+regex = { version = "1.12.3", default-features = false, features = ["std"] }
+tokio = "1.50.0"
