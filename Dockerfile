@@ -1,9 +1,13 @@
-FROM docker.io/library/rust:slim as builder
-RUN mkdir -p /work /geoip /geosite && apt update && apt install -y pkg-config gcc
+FROM docker.io/library/rust:slim as builder-rs
 COPY src /work/src
 COPY Cargo.toml Cargo.lock /work/
 WORKDIR /work
 RUN cargo build --release --target-dir .
+
+FROM docker.io/library/golang as builder-go
+COPY nftsetd /work
+WORKDIR /work
+RUN go build .
 
 FROM ghcr.io/sagernet/sing-box as sing-box
 RUN apk add --no-cache wget jq && mkdir -p /work
@@ -29,15 +33,15 @@ RUN set -euo pipefail && mkdir -p /geosite && \
 
 FROM docker.io/powerdns/dnsdist-21
 USER root
-RUN mkdir -p /work /app/c /app/lua
-WORKDIR /work
+RUN mkdir -p /app/c /app/lua
+WORKDIR /app
 COPY --from=exporter /geoip /geoip
 COPY --from=exporter /geosite /geosite
 
-COPY --from=builder /work/release/*.so /app/c/
+COPY --from=builder-rs /work/release/*.so /app/c/
+COPY --from=builder-go /work/nftsetd /app/nftsetd
 COPY lua/*.lua /app/lua/
 
 COPY entry.sh /entry.sh
-USER pdns
 VOLUME ["/work"]
 ENTRYPOINT [ "/entry.sh" ]
