@@ -1,9 +1,9 @@
 use std::{
     collections::BTreeMap,
-    ffi::CStr,
+    ffi::{CStr, CString},
     fs::File,
     io::BufReader,
-    net::{Ipv4Addr, Ipv6Addr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
     path::PathBuf,
     ptr,
     str::FromStr,
@@ -14,10 +14,12 @@ use crate::{
     dnsdist::{DNSQuestion, Packet},
     domain::DomainMatcher,
     ip::IpMatcher,
+    nftset::NftTarget,
 };
 mod dnsdist;
 mod domain;
 mod ip;
+mod nftset;
 
 static LOADED_GEOSITE: Mutex<BTreeMap<PathBuf, &'static DomainMatcher>> =
     Mutex::new(BTreeMap::new());
@@ -109,7 +111,6 @@ pub unsafe extern "C" fn ruder_load_ip_rule(path: *const i8) -> *const IpMatcher
 pub unsafe extern "C" fn ruder_match_query_for_ip_rule(
     q: DNSQuestion,
     rule: *const IpMatcher,
-    _invert: bool,
 ) -> bool {
     let rule: &'static _ = unsafe { &*rule };
     let pack = Packet::new(q);
@@ -119,28 +120,46 @@ pub unsafe extern "C" fn ruder_match_query_for_ip_rule(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn my_dnsdist_ffi_action(q: DNSQuestion) {
-    eprintln!("Query = {}", q.get_qname_full());
-    let pack = Packet::new(q);
-    for record in pack.records() {
-        let buf = record.content();
-        let value = match record.record_type() {
-            dnsdist::QType::A => {
-                format_args!("{}", Ipv4Addr::from_octets(*buf.as_array().unwrap()))
-            }
-            dnsdist::QType::AAAA => {
-                format_args!("{}", Ipv6Addr::from_octets(*buf.as_array().unwrap()))
-            }
-            dnsdist::QType::CNAME => {
-                format_args!("{:?}", record.as_cname())
-            }
-            _ => format_args!("?"),
+pub unsafe extern "C" fn ruder_load_nftset_target(expr: *const i8) -> *mut NftTarget {
+    unsafe {
+        let s = CStr::from_ptr(expr).to_str().unwrap();
+        let Ok(target) =
+            NftTarget::new(s).inspect_err(|err| eprintln!("Failed to parse nftset expr {err}"))
+        else {
+            return ptr::null_mut();
         };
-        eprintln!(
-            "Record = type({:?}) ttl({}) value = {}",
-            record.record_type(),
-            record.ttl(),
-            value
-        );
+        Box::into_raw(Box::new(target))
     }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ruder_commit_to_nftset(
+    q: DNSQuestion,
+    target: *mut NftTarget,
+    reconnect: bool,
+) -> bool {
+    let target: &'static mut NftTarget = unsafe { &mut *target };
+    if reconnect {
+        if target
+            .reconnect()
+            .inspect_err(|err| eprintln!("Failed to connect to nftsetd: {err}"))
+            .is_err()
+        {
+            return true;
+        }
+    }
+    let name = &q.get_qname_full()[1..];
+    let pack = Packet::new(q);
+    let addrs = pack.records().filter_map(|record| {
+        let buf = record.content();
+        Some(match record.record_type() {
+            dnsdist::QType::A => IpAddr::from(Ipv4Addr::from_octets(*buf.as_array().unwrap())),
+            dnsdist::QType::AAAA => IpAddr::from(Ipv6Addr::from_octets(*buf.as_array().unwrap())),
+            _ => return None,
+        })
+    });
+    target
+        .run(addrs, name)
+        .inspect_err(|err| eprintln!("Failed to commit to nftset: {err}"))
+        .is_err()
 }

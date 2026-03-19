@@ -19,6 +19,9 @@ impl DomainMatcher {
             let domain = "domain:";
             let full = "full:";
             if let Some(line) = line.strip_prefix(regexp) {
+                if line.trim().is_empty() {
+                    continue;
+                }
                 regexps.push(line.to_string());
             } else if let Some(line) = line.strip_prefix(domain) {
                 domains.insert(line.trim_matches('.').to_string());

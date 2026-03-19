@@ -30,10 +30,14 @@ if IsFFIEnv == nil then
                                                      "/geosite/" .. path)))
     end
 
-    M.GeoIPRule = function(path, invert)
+    M.GeoIPRule = function(path)
         return LuaFFIPerThreadRule(wrapper(
-                                       string.format("GeoIPRule(%q, %s)",
-                                                     "/geoip/" .. path, invert)))
+                                       string.format("GeoIPRule(%q)",
+                                                     "/geoip/" .. path)))
+    end
+    M.NftsetResponseAction = function(expr, containue)
+        return LuaFFIPerThreadResponseAction(
+                   wrapper(string.format("NftsetResponseAction(%q, %s)", expr, containue)))
     end
 else
     local ffi = require("ffi")
@@ -44,7 +48,9 @@ else
         void *ruder_load_site_rule(const char *path);
         bool ruder_match_query_for_site_rule(dnsdist_ffi_dnsquestion_t* ptr, void *rule);
         void *ruder_load_ip_rule(const char *path);
-        bool ruder_match_query_for_ip_rule(dnsdist_ffi_dnsquestion_t* ptr, void *rule, bool invert);
+        bool ruder_match_query_for_ip_rule(dnsdist_ffi_dnsquestion_t* ptr, void *rule);
+        void *ruder_load_nftset_target(const char *expr);
+        bool ruder_commit_to_nftset(dnsdist_ffi_dnsquestion_t* ptr, void *nftset_target, bool reconnect);
     ]])
 
     local C = ffi.C
@@ -76,11 +82,29 @@ else
         end
     end
 
-    M.GeoIPRule = function(path, invert)
+    M.GeoIPRule = function(path)
         local ruleset = lib.ruder_load_ip_rule(path)
         if ruleset == ffi.NULL then error("cannot build ruleset") end
         return function(ptr)
-            return lib.ruder_match_query_for_ip_rule(ptr, ruleset, invert)
+            return lib.ruder_match_query_for_ip_rule(ptr, ruleset)
+        end
+    end
+
+    M.NftsetResponseAction = function(expr, containue)
+        local ret = DNSResponseAction.Allow
+        if containue then
+            ret = DNSResponseAction.None
+        end
+        local target = lib.ruder_load_nftset_target(expr)
+        local last = false
+        if target == ffi.NULL then error("cannot build nftset expr") end
+        return function(ptr)
+            last = lib.ruder_commit_to_nftset(ptr, target, last)
+            if last then
+                io.stderr:write("fail to commit to nftset")
+                return DNSResponseAction.Drop
+            end
+            return ret
         end
     end
 end
